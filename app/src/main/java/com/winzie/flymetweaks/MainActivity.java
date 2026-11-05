@@ -73,7 +73,9 @@ public class MainActivity extends Activity {
                 StringBuilder sb = new StringBuilder();
                 int code = -1;
                 try {
-                    Process p = new ProcessBuilder("su", "-c", cmd).redirectErrorStream(true).start();
+                    Process p = (useMountMaster()
+                            ? new ProcessBuilder("su", "-M", "-c", cmd)
+                            : new ProcessBuilder("su", "-c", cmd)).redirectErrorStream(true).start();
                     BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()));
                     String l;
                     while ((l = r.readLine()) != null) sb.append(l).append('\n');
@@ -93,6 +95,28 @@ public class MainActivity extends Activity {
         }).start();
     }
 
+    // Root shells started by an app normally can't see other apps' data (Android data isolation).
+    // "su -M" (mount-master) uses the global mount namespace so those paths are visible.
+    static volatile int mmMode = -1;
+
+    static synchronized boolean useMountMaster() {
+        if (mmMode == -1) {
+            mmMode = 0;
+            try {
+                Process p = new ProcessBuilder("su", "-M", "-c", "id").redirectErrorStream(true).start();
+                BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()));
+                StringBuilder sb = new StringBuilder();
+                String l;
+                while ((l = r.readLine()) != null) sb.append(l);
+                p.waitFor();
+                if (sb.toString().contains("uid=0")) mmMode = 1;
+            } catch (Exception e) {
+                // keep mode 0
+            }
+        }
+        return mmMode == 1;
+    }
+
     static String sq(String s) {
         return "'" + s.replace("'", "'\\''") + "'";
     }
@@ -101,7 +125,8 @@ public class MainActivity extends Activity {
         su("id", new Cb() {
             public void done(int c, String out) {
                 rootStatus.setText(c == 0 && out.contains("uid=0")
-                        ? "Root: granted" : "Root: NOT available. Grant su access to this app.");
+                        ? "Root: granted" + (mmMode == 1 ? " (global mount)" : "")
+                        : "Root: NOT available. Grant su access to this app.");
             }
         });
     }
@@ -110,7 +135,7 @@ public class MainActivity extends Activity {
     void loadToggles() {
         toggles.clear();
         try {
-            JSONArray a = new JSONArray(sp.getString("toggles", DEFAULTS));
+            JSONArray a = new JSONArray(sp.getString("toggles", "[]"));
             for (int i = 0; i < a.length(); i++) {
                 JSONObject o = a.getJSONObject(i);
                 Toggle t = new Toggle();
@@ -125,6 +150,65 @@ public class MainActivity extends Activity {
         } catch (Exception e) {
             // ignore, start empty
         }
+        if (sp.getInt("seed", 0) < SEED_VERSION) {
+            for (Toggle d : seedList()) {
+                boolean have = false;
+                for (Toggle t : toggles) if (t.key.equals(d.key)) have = true;
+                if (!have) toggles.add(d);
+            }
+            saveToggles();
+            sp.edit().putInt("seed", SEED_VERSION).apply();
+        }
+    }
+
+    static final int SEED_VERSION = 2;
+
+    static Toggle sw(String label, String key, String on, String off) {
+        Toggle t = new Toggle();
+        t.label = label;
+        t.key = key;
+        t.on = on;
+        t.off = off;
+        return t;
+    }
+
+    static Toggle ch(String label, String key) {
+        Toggle t = new Toggle();
+        t.label = label;
+        t.key = key;
+        t.choice = true;
+        t.opts = "Lite=basic\nFull=full";
+        return t;
+    }
+
+    static List<Toggle> seedList() {
+        List<Toggle> l = new ArrayList<>();
+        l.add(sw("Parallel app open/close animation", "persist.wm.debug.flyme_recents_merge_animation", "true", "false"));
+        // Blur (Lite / Full)
+        l.add(ch("Blur: launcher", "persist.sys.launcher.blur.conf"));
+        l.add(ch("Blur: recents", "persist.sys.launcher.recent.blur.conf"));
+        l.add(ch("Blur: notification shade", "persist.sys.systemui.notification.blur.conf"));
+        l.add(ch("Blur: assistant", "persist.sys.assistant.blur.conf"));
+        l.add(ch("Blur: control center", "persist.sys.systemui.control.blur.conf"));
+        l.add(ch("Blur: quick panel", "persist.sys.systemui.panel.blur.conf"));
+        l.add(ch("Blur: lock screen bouncer", "persist.sys.systemui.bouncer.blur.conf"));
+        l.add(sw("Blur: launcher AI search", "persist.sys.launcher.aisearch.blur.conf", "true", "false"));
+        l.add(sw("Blur: windowed mode", "persist.sys.windowmode.blur.conf", "true", "false"));
+        l.add(sw("Blur: cache", "persist.sys.enable_blur_cache", "true", "false"));
+        // Animations (Lite / Full)
+        l.add(ch("Anim: app opening", "persist.sys.launcher.app.opening.anim.conf"));
+        l.add(ch("Anim: app closing", "persist.sys.launcher.app.closing.anim.conf"));
+        l.add(ch("Anim: folder", "persist.sys.launcher.folder.anim.conf"));
+        l.add(ch("Anim: widget opening", "persist.sys.launcher.widget.opening.anim.conf"));
+        l.add(ch("Anim: capsule", "persist.sys.launcher.capsule.anim.conf"));
+        l.add(ch("Anim: unlock", "persist.sys.launcher.unlockanim.conf"));
+        l.add(ch("Anim: notification launch", "persist.sys.systemui.notification.launch.anim.conf"));
+        l.add(ch("Anim: wake up", "persist.sys.systemui.wakeup.anim.conf"));
+        l.add(ch("Anim: screenshot", "persist.sys.systemui.screenshot.anim.conf"));
+        l.add(ch("Anim: control center", "persist.sys.systemui.control.anim.conf"));
+        l.add(ch("Anim: wallpaper scale", "persist.sys.wallpaper.scale.anim.conf"));
+        l.add(ch("Anim: windowed mode", "persist.sys.windowmode.anim.conf"));
+        return l;
     }
 
     void saveToggles() {
@@ -211,7 +295,7 @@ public class MainActivity extends Activity {
                     }
                 })));
         TextView hint = new TextView(this);
-        hint.setText("Long-press a toggle to edit or delete it. Some changes need a framework restart.");
+        hint.setText("Long-press a toggle to edit or delete it. Launcher/recents props: Restart launcher. SystemUI props: Restart SystemUI. Others: Soft reboot.");
         hint.setTextSize(12);
         root.addView(hint);
 
