@@ -2,16 +2,33 @@ package com.winzie.flymetweaks;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.Context;
+import android.content.DialogInterface;
 import android.content.SharedPreferences;
+import android.content.res.ColorStateList;
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.Outline;
+import android.graphics.RenderEffect;
+import android.graphics.Shader;
 import android.graphics.Typeface;
+import android.graphics.drawable.BitmapDrawable;
+import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.RippleDrawable;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.InputType;
+import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.Button;
+import android.view.ViewOutlineProvider;
+import android.view.ViewTreeObserver;
+import android.widget.CompoundButton;
 import android.widget.EditText;
+import android.widget.FrameLayout;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.RadioButton;
 import android.widget.RadioGroup;
@@ -31,13 +48,44 @@ import java.util.regex.Pattern;
 
 public class MainActivity extends Activity {
 
+    // ---------- palette: Material You dynamic colors on Android 12+, blue fallback below ----------
+    static int BG = 0xFF111418;
+    static int CARD = 0xFF1E2227;
+    static int CARD2 = 0xFF2F4156;
+    static int PRIMARY = 0xFFA5C8FF;
+    static int ACCENT = 0xFFA5C8FF;
+    static int ON_PRIMARY = 0xFF00315E;
+    static int ON_SURFACE = 0xFFE2E2E9;
+    static int ON_VARIANT = 0xFFC3C6CF;
+    static int DIVIDER = 0xFF3A3F47;
+    static final int ERROR = 0xFFFFB4AB;
+    static final int ON_ERROR = 0xFF690005;
+
+    static void initPalette(Context c) {
+        if (Build.VERSION.SDK_INT >= 31) {
+            BG = c.getColor(android.R.color.system_neutral1_900);
+            CARD = c.getColor(android.R.color.system_neutral1_800);
+            CARD2 = c.getColor(android.R.color.system_accent2_700);
+            PRIMARY = c.getColor(android.R.color.system_accent1_200);
+            ON_PRIMARY = c.getColor(android.R.color.system_accent1_800);
+            ON_SURFACE = c.getColor(android.R.color.system_neutral1_100);
+            ON_VARIANT = c.getColor(android.R.color.system_neutral2_200);
+            DIVIDER = c.getColor(android.R.color.system_neutral2_700);
+        }
+        ACCENT = PRIMARY;
+    }
+
+    static int alpha(int color, int a) {
+        return (a << 24) | (color & 0x00FFFFFF);
+    }
+
+    static final int MATCH = ViewGroup.LayoutParams.MATCH_PARENT;
+    static final int WRAP = ViewGroup.LayoutParams.WRAP_CONTENT;
+
     static final String LAUNCHER = "com.meizu.flyme.launcher";
-    static final String PREFS_XML = "/data/data/" + LAUNCHER
-            + "/shared_prefs/MzCommonUtils_Common_Preferences.xml";
     static final String ICON_KEY = "MzCommonUtils_Icon_Size_Progress";
-    static final String DEFAULTS = "[{\"label\":\"Parallel app open/close animation\","
-            + "\"key\":\"persist.wm.debug.flyme_recents_merge_animation\","
-            + "\"on\":\"true\",\"off\":\"false\"}]";
+    static final String PREFS_NAME = "MzCommonUtils_Common_Preferences.xml";
+    static final int SEED_VERSION = 2;
 
     static class Toggle {
         String label, key, on = "", off = "", opts = "";
@@ -51,21 +99,40 @@ public class MainActivity extends Activity {
     private final Handler ui = new Handler(Looper.getMainLooper());
     private SharedPreferences sp;
     private final List<Toggle> toggles = new ArrayList<>();
-    private LinearLayout toggleBox;
-    private TextView logView, rootStatus;
+
+    private ScrollView scroll;
+    private final LinearLayout[] pages = new LinearLayout[4];
+    private final LinearLayout[] tabs = new LinearLayout[4];
+    private final ImageView[] tabIcons = new ImageView[4];
+    private final TextView[] tabLabels = new TextView[4];
+    private GlassBar bar;
+
+    private LinearLayout statusCard, toggleBox;
+    private TextView statusTitle, statusSub, flymeVer, logView;
     private EditText iconInput;
 
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
+        initPalette(this);
+        getWindow().setStatusBarColor(BG);
+        getWindow().setNavigationBarColor(BG);
         sp = getSharedPreferences("cfg", MODE_PRIVATE);
         loadToggles();
         buildUi();
+        selectTab(0);
         checkRoot();
         refreshToggles();
+        su("getprop ro.build.display.id", new Cb() {
+            public void done(int c, String out) {
+                flymeVer.setText(out.isEmpty() ? "unknown" : out);
+            }
+        });
     }
 
-    // ---------- root helper ----------
+    // =====================================================================
+    // root helper
+    // =====================================================================
     void su(final String cmd, final Cb cb) {
         new Thread(new Runnable() {
             @Override
@@ -124,14 +191,25 @@ public class MainActivity extends Activity {
     void checkRoot() {
         su("id", new Cb() {
             public void done(int c, String out) {
-                rootStatus.setText(c == 0 && out.contains("uid=0")
-                        ? "Root: granted" + (mmMode == 1 ? " (global mount)" : "")
-                        : "Root: NOT available. Grant su access to this app.");
+                boolean ok = c == 0 && out.contains("uid=0");
+                statusCard.setBackground(round(ok ? PRIMARY : ERROR, 32));
+                statusTitle.setTextColor(ok ? ON_PRIMARY : ON_ERROR);
+                statusSub.setTextColor(ok ? ON_PRIMARY : ON_ERROR);
+                if (ok) {
+                    statusTitle.setText("Working");
+                    statusSub.setText(mmMode == 1 ? "Root granted, global mount"
+                            : "Root granted, isolated mount (icon size editing may fail)");
+                } else {
+                    statusTitle.setText("No root");
+                    statusSub.setText("Grant su access to Flyme Tweaks, then reopen the app");
+                }
             }
         });
     }
 
-    // ---------- storage ----------
+    // =====================================================================
+    // storage + seeded toggles
+    // =====================================================================
     void loadToggles() {
         toggles.clear();
         try {
@@ -161,7 +239,24 @@ public class MainActivity extends Activity {
         }
     }
 
-    static final int SEED_VERSION = 2;
+    void saveToggles() {
+        try {
+            JSONArray a = new JSONArray();
+            for (Toggle t : toggles) {
+                JSONObject o = new JSONObject();
+                o.put("label", t.label);
+                o.put("key", t.key);
+                o.put("on", t.on);
+                o.put("off", t.off);
+                o.put("choice", t.choice);
+                o.put("opts", t.opts);
+                a.put(o);
+            }
+            sp.edit().putString("toggles", a.toString()).apply();
+        } catch (Exception e) {
+            log("Save failed: " + e.getMessage());
+        }
+    }
 
     static Toggle sw(String label, String key, String on, String off) {
         Toggle t = new Toggle();
@@ -184,7 +279,6 @@ public class MainActivity extends Activity {
     static List<Toggle> seedList() {
         List<Toggle> l = new ArrayList<>();
         l.add(sw("Parallel app open/close animation", "persist.wm.debug.flyme_recents_merge_animation", "true", "false"));
-        // Blur (Lite / Full)
         l.add(ch("Blur: launcher", "persist.sys.launcher.blur.conf"));
         l.add(ch("Blur: recents", "persist.sys.launcher.recent.blur.conf"));
         l.add(ch("Blur: notification shade", "persist.sys.systemui.notification.blur.conf"));
@@ -195,7 +289,6 @@ public class MainActivity extends Activity {
         l.add(sw("Blur: launcher AI search", "persist.sys.launcher.aisearch.blur.conf", "true", "false"));
         l.add(sw("Blur: windowed mode", "persist.sys.windowmode.blur.conf", "true", "false"));
         l.add(sw("Blur: cache", "persist.sys.enable_blur_cache", "true", "false"));
-        // Animations (Lite / Full)
         l.add(ch("Anim: app opening", "persist.sys.launcher.app.opening.anim.conf"));
         l.add(ch("Anim: app closing", "persist.sys.launcher.app.closing.anim.conf"));
         l.add(ch("Anim: folder", "persist.sys.launcher.folder.anim.conf"));
@@ -211,145 +304,375 @@ public class MainActivity extends Activity {
         return l;
     }
 
-    void saveToggles() {
-        try {
-            JSONArray a = new JSONArray();
-            for (Toggle t : toggles) {
-                JSONObject o = new JSONObject();
-                o.put("label", t.label);
-                o.put("key", t.key);
-                o.put("on", t.on);
-                o.put("off", t.off);
-                o.put("choice", t.choice);
-                o.put("opts", t.opts);
-                a.put(o);
-            }
-            sp.edit().putString("toggles", a.toString()).apply();
-        } catch (Exception e) {
-            log("Save failed: " + e.getMessage());
-        }
-    }
-
-    // ---------- UI ----------
+    // =====================================================================
+    // view helpers
+    // =====================================================================
     int dp(int v) {
         return (int) (v * getResources().getDisplayMetrics().density);
     }
 
-    TextView header(String t) {
+    GradientDrawable round(int color, int radiusDp) {
+        GradientDrawable g = new GradientDrawable();
+        g.setColor(color);
+        g.setCornerRadius(dp(radiusDp));
+        return g;
+    }
+
+    TextView tv(String text, int sp, int color, boolean bold) {
         TextView v = new TextView(this);
-        v.setText(t);
-        v.setTextSize(18);
-        v.setTypeface(null, Typeface.BOLD);
-        v.setPadding(0, dp(22), 0, dp(6));
+        v.setText(text);
+        v.setTextSize(sp);
+        v.setTextColor(color);
+        if (bold) v.setTypeface(null, Typeface.BOLD);
         return v;
     }
 
-    Button btn(String t, View.OnClickListener l) {
-        Button b = new Button(this);
-        b.setText(t);
-        b.setAllCaps(false);
+    TextView header(String text) {
+        TextView h = tv(text, 14, ACCENT, true);
+        h.setPadding(dp(8), dp(22), 0, dp(2));
+        return h;
+    }
+
+    LinearLayout.LayoutParams mlp(int topDp) {
+        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(MATCH, WRAP);
+        p.topMargin = dp(topDp);
+        return p;
+    }
+
+    LinearLayout card() {
+        LinearLayout c = new LinearLayout(this);
+        c.setOrientation(LinearLayout.VERTICAL);
+        c.setBackground(round(CARD, 28));
+        c.setPadding(dp(18), dp(14), dp(18), dp(14));
+        return c;
+    }
+
+    LinearLayout newPage(String title) {
+        LinearLayout p = new LinearLayout(this);
+        p.setOrientation(LinearLayout.VERTICAL);
+        p.setPadding(dp(4), dp(8), dp(4), dp(8));
+        TextView t = tv(title, 40, ON_SURFACE, false);
+        t.setPadding(dp(8), dp(28), 0, dp(14));
+        p.addView(t);
+        return p;
+    }
+
+    TextView addInfo(LinearLayout page, String title, String sub) {
+        LinearLayout c = card();
+        c.addView(tv(title, 18, ON_SURFACE, false));
+        TextView s = tv(sub, 14, ON_VARIANT, false);
+        s.setPadding(0, dp(2), 0, 0);
+        c.addView(s);
+        page.addView(c, mlp(8));
+        return s;
+    }
+
+    void addAction(LinearLayout page, String title, String sub, View.OnClickListener l) {
+        LinearLayout c = card();
+        c.setBackground(new RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), round(CARD, 28), null));
+        c.addView(tv(title, 18, ON_SURFACE, false));
+        TextView s = tv(sub, 14, ON_VARIANT, false);
+        s.setPadding(0, dp(2), 0, 0);
+        c.addView(s);
+        c.setClickable(true);
+        c.setOnClickListener(l);
+        page.addView(c, mlp(8));
+    }
+
+    TextView pill(String text, boolean primary, View.OnClickListener l) {
+        TextView b = tv(text, 15, primary ? ON_PRIMARY : ON_SURFACE, true);
+        b.setGravity(Gravity.CENTER);
+        b.setPadding(dp(16), dp(14), dp(16), dp(14));
+        b.setBackground(new RippleDrawable(ColorStateList.valueOf(0x44FFFFFF),
+                round(primary ? PRIMARY : CARD2, 28), null));
+        b.setClickable(true);
         b.setOnClickListener(l);
         return b;
     }
 
-    LinearLayout row(Button... bs) {
+    LinearLayout pillRow(TextView... bs) {
         LinearLayout r = new LinearLayout(this);
         r.setOrientation(LinearLayout.HORIZONTAL);
-        for (Button b : bs) {
-            r.addView(b, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        for (TextView b : bs) {
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, WRAP, 1f);
+            lp.setMargins(dp(4), 0, dp(4), 0);
+            r.addView(b, lp);
         }
         return r;
     }
 
+    static ColorStateList cs(int checked, int unchecked) {
+        return new ColorStateList(
+                new int[][]{new int[]{android.R.attr.state_checked}, new int[]{}},
+                new int[]{checked, unchecked});
+    }
+
+    // =====================================================================
+    // layout: pages + glass bottom bar
+    // =====================================================================
     void buildUi() {
-        ScrollView sv = new ScrollView(this);
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        int p = dp(16);
-        root.setPadding(p, p, p, p);
-        sv.addView(root);
+        FrameLayout root = new FrameLayout(this);
+        root.setBackgroundColor(BG);
 
-        TextView title = new TextView(this);
-        title.setText("Flyme Tweaks");
-        title.setTextSize(26);
-        title.setTypeface(null, Typeface.BOLD);
-        root.addView(title);
+        scroll = new ScrollView(this);
+        scroll.setClipToPadding(false);
+        scroll.setVerticalScrollBarEnabled(false);
+        scroll.setPadding(dp(16), 0, dp(16), dp(120));
+        root.addView(scroll, new FrameLayout.LayoutParams(MATCH, MATCH));
 
-        rootStatus = new TextView(this);
-        rootStatus.setText("Root: checking...");
-        root.addView(rootStatus);
+        pages[0] = buildHome();
+        pages[1] = buildTogglesPage();
+        pages[2] = buildLauncherPage();
+        pages[3] = buildLogPage();
 
-        root.addView(header("Toggles"));
+        bar = new GlassBar(this, scroll);
+        String[] names = {"Home", "Toggles", "Launcher", "Log"};
+        int[] icons = {R.drawable.ic_home, R.drawable.ic_tune, R.drawable.ic_apps, R.drawable.ic_log};
+        for (int i = 0; i < 4; i++) {
+            final int idx = i;
+            LinearLayout tab = new LinearLayout(this);
+            tab.setOrientation(LinearLayout.VERTICAL);
+            tab.setGravity(Gravity.CENTER);
+            ImageView iv = new ImageView(this);
+            iv.setImageResource(icons[i]);
+            TextView t = tv(names[i], 11, ON_SURFACE, false);
+            t.setGravity(Gravity.CENTER);
+            tab.addView(iv, new LinearLayout.LayoutParams(dp(24), dp(24)));
+            tab.addView(t, new LinearLayout.LayoutParams(WRAP, WRAP));
+            tab.setOnClickListener(new View.OnClickListener() {
+                public void onClick(View v) {
+                    selectTab(idx);
+                }
+            });
+            tabs[i] = tab;
+            tabIcons[i] = iv;
+            tabLabels[i] = t;
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, MATCH, 1f);
+            lp.setMargins(dp(2), 0, dp(2), 0);
+            bar.row.addView(tab, lp);
+        }
+        FrameLayout.LayoutParams bl = new FrameLayout.LayoutParams(MATCH, dp(68), Gravity.BOTTOM);
+        bl.setMargins(dp(24), 0, dp(24), dp(20));
+        root.addView(bar, bl);
+
+        setContentView(root);
+    }
+
+    void selectTab(int i) {
+        scroll.removeAllViews();
+        scroll.addView(pages[i], new ViewGroup.LayoutParams(MATCH, WRAP));
+        scroll.scrollTo(0, 0);
+        for (int j = 0; j < 4; j++) {
+            boolean sel = j == i;
+            tabs[j].setBackground(sel ? round(alpha(ON_SURFACE, 0x33), 30) : null);
+            tabIcons[j].setColorFilter(sel ? ACCENT : ON_SURFACE);
+            tabLabels[j].setTextColor(sel ? ACCENT : ON_SURFACE);
+        }
+        bar.refresh();
+    }
+
+    /** Frosted "glass" bar: blurs a snapshot of what scrolls behind it. */
+    static class GlassBar extends FrameLayout {
+        final ImageView blur;
+        final LinearLayout row;
+        final View source;
+        Bitmap bmp;
+        final int[] a = new int[2];
+        final int[] b = new int[2];
+        final Runnable tick = new Runnable() {
+            public void run() {
+                refresh();
+                postDelayed(this, 250);
+            }
+        };
+
+        GlassBar(Context ctx, View src) {
+            super(ctx);
+            source = src;
+            final float d = ctx.getResources().getDisplayMetrics().density;
+            blur = new ImageView(ctx);
+            blur.setScaleType(ImageView.ScaleType.FIT_XY);
+            if (Build.VERSION.SDK_INT >= 31) {
+                blur.setRenderEffect(RenderEffect.createBlurEffect(12f, 12f, Shader.TileMode.CLAMP));
+            }
+            addView(blur, new FrameLayout.LayoutParams(MATCH, MATCH));
+
+            View tint = new View(ctx);
+            GradientDrawable g = new GradientDrawable();
+            g.setColor(MainActivity.alpha(MainActivity.ON_SURFACE, 0x2A));
+            g.setCornerRadius(100 * d);
+            g.setStroke((int) (1.5f * d), MainActivity.alpha(MainActivity.ON_SURFACE, 0x77));
+            tint.setBackground(g);
+            addView(tint, new FrameLayout.LayoutParams(MATCH, MATCH));
+
+            row = new LinearLayout(ctx);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setPadding((int) (6 * d), (int) (6 * d), (int) (6 * d), (int) (6 * d));
+            addView(row, new FrameLayout.LayoutParams(MATCH, MATCH));
+
+            setOutlineProvider(new ViewOutlineProvider() {
+                @Override
+                public void getOutline(View view, Outline outline) {
+                    outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), view.getHeight() / 2f);
+                }
+            });
+            setClipToOutline(true);
+
+            src.getViewTreeObserver().addOnScrollChangedListener(new ViewTreeObserver.OnScrollChangedListener() {
+                public void onScrollChanged() {
+                    refresh();
+                }
+            });
+        }
+
+        @Override
+        protected void onAttachedToWindow() {
+            super.onAttachedToWindow();
+            post(tick);
+        }
+
+        @Override
+        protected void onDetachedFromWindow() {
+            removeCallbacks(tick);
+            super.onDetachedFromWindow();
+        }
+
+        void refresh() {
+            int w = getWidth();
+            int h = getHeight();
+            if (w <= 0 || h <= 0 || source.getWidth() <= 0) return;
+            int sw = Math.max(1, w / 4);
+            int sh = Math.max(1, h / 4);
+            if (bmp == null || bmp.getWidth() != sw || bmp.getHeight() != sh) {
+                bmp = Bitmap.createBitmap(sw, sh, Bitmap.Config.ARGB_8888);
+                blur.setImageDrawable(new BitmapDrawable(getResources(), bmp));
+            }
+            Canvas c = new Canvas(bmp);
+            c.drawColor(MainActivity.BG);
+            getLocationInWindow(a);
+            source.getLocationInWindow(b);
+            c.scale(sw / (float) w, sh / (float) h);
+            c.translate(b[0] - a[0] - source.getScrollX(), b[1] - a[1] - source.getScrollY());
+            source.draw(c);
+            blur.invalidate();
+        }
+    }
+
+    // =====================================================================
+    // pages
+    // =====================================================================
+    LinearLayout buildHome() {
+        LinearLayout p = newPage("Flyme Tweaks");
+
+        statusCard = new LinearLayout(this);
+        statusCard.setOrientation(LinearLayout.VERTICAL);
+        statusCard.setBackground(round(PRIMARY, 32));
+        statusCard.setPadding(dp(24), dp(20), dp(24), dp(20));
+        statusTitle = tv("Checking root...", 26, ON_PRIMARY, true);
+        statusSub = tv("", 14, ON_PRIMARY, false);
+        statusCard.addView(statusTitle);
+        statusCard.addView(statusSub);
+        p.addView(statusCard, mlp(4));
+
+        p.addView(header("Device"));
+        addInfo(p, "Device model", Build.MANUFACTURER + " " + Build.MODEL);
+        addInfo(p, "Android version", Build.VERSION.RELEASE);
+        flymeVer = addInfo(p, "Flyme version", "...");
+
+        p.addView(header("Actions"));
+        addAction(p, "Restart launcher", "Force-stop the Flyme launcher and return home", new View.OnClickListener() {
+            public void onClick(View v) {
+                runLogged("am force-stop " + LAUNCHER
+                        + "; am start -a android.intent.action.MAIN -c android.intent.category.HOME >/dev/null 2>&1; echo 'Launcher restarted'");
+            }
+        });
+        addAction(p, "Restart SystemUI", "Applies notification, control center and panel changes", new View.OnClickListener() {
+            public void onClick(View v) {
+                runLogged("killall com.android.systemui || pkill -f com.android.systemui; echo 'SystemUI restarted'");
+            }
+        });
+        addAction(p, "Soft reboot", "Restart the Android framework (screen goes black briefly)", new View.OnClickListener() {
+            public void onClick(View v) {
+                confirm("Restart the Android framework? The screen will go black for a moment.",
+                        "setprop ctl.restart zygote");
+            }
+        });
+        addAction(p, "Reboot", "Full device reboot", new View.OnClickListener() {
+            public void onClick(View v) {
+                confirm("Reboot the phone?", "reboot");
+            }
+        });
+        return p;
+    }
+
+    LinearLayout buildTogglesPage() {
+        LinearLayout p = newPage("Toggles");
         toggleBox = new LinearLayout(this);
         toggleBox.setOrientation(LinearLayout.VERTICAL);
-        root.addView(toggleBox);
-        root.addView(row(
-                btn("Add toggle", new View.OnClickListener() {
-                    public void onClick(View v) {
-                        editDialog(null, "", "");
-                    }
-                }),
-                btn("Scan props", new View.OnClickListener() {
-                    public void onClick(View v) {
-                        scanProps();
-                    }
-                })));
-        TextView hint = new TextView(this);
-        hint.setText("Long-press a toggle to edit or delete it. Launcher/recents props: Restart launcher. SystemUI props: Restart SystemUI. Others: Soft reboot.");
-        hint.setTextSize(12);
-        root.addView(hint);
+        p.addView(toggleBox, new LinearLayout.LayoutParams(MATCH, WRAP));
+        p.addView(header("Manage"));
+        addAction(p, "Add toggle", "Create your own property toggle", new View.OnClickListener() {
+            public void onClick(View v) {
+                editDialog(null, "", "");
+            }
+        });
+        addAction(p, "Scan props", "List blur / flyme / animation props on this phone", new View.OnClickListener() {
+            public void onClick(View v) {
+                scanProps();
+            }
+        });
+        TextView hint = tv("Long-press a toggle to edit or delete it. Launcher and recents props: Restart launcher. "
+                + "SystemUI props: Restart SystemUI. Anything else: Soft reboot.", 13, ON_VARIANT, false);
+        hint.setPadding(dp(8), dp(12), dp(8), 0);
+        p.addView(hint);
+        return p;
+    }
 
-        root.addView(header("Launcher icon size"));
+    LinearLayout buildLauncherPage() {
+        LinearLayout p = newPage("Launcher");
+        p.addView(header("Icon size"));
+        LinearLayout c = card();
+        c.addView(tv("Icon size progress", 18, ON_SURFACE, false));
+        TextView s = tv("Values above 100 go past the stock slider limit. The launcher restarts after applying.",
+                13, ON_VARIANT, false);
+        s.setPadding(0, dp(2), 0, dp(6));
+        c.addView(s);
         iconInput = new EditText(this);
-        iconInput.setHint("Icon size progress (e.g. 120)");
+        iconInput.setHint("e.g. 175");
+        iconInput.setHintTextColor(ON_VARIANT);
+        iconInput.setTextColor(ON_SURFACE);
         iconInput.setInputType(InputType.TYPE_CLASS_NUMBER);
-        root.addView(iconInput);
-        root.addView(row(
-                btn("Read current", new View.OnClickListener() {
+        iconInput.setBackgroundTintList(ColorStateList.valueOf(ACCENT));
+        c.addView(iconInput, new LinearLayout.LayoutParams(MATCH, WRAP));
+        p.addView(c, mlp(8));
+        p.addView(pillRow(
+                pill("Read current", false, new View.OnClickListener() {
                     public void onClick(View v) {
                         readIcon();
                     }
                 }),
-                btn("Apply", new View.OnClickListener() {
+                pill("Apply", true, new View.OnClickListener() {
                     public void onClick(View v) {
                         applyIcon();
                     }
-                })));
+                })), mlp(12));
+        return p;
+    }
 
-        root.addView(header("Actions"));
-        root.addView(row(
-                btn("Restart launcher", new View.OnClickListener() {
-                    public void onClick(View v) {
-                        runLogged("am force-stop " + LAUNCHER
-                                + "; am start -a android.intent.action.MAIN -c android.intent.category.HOME >/dev/null 2>&1; echo ok");
-                    }
-                }),
-                btn("Restart SystemUI", new View.OnClickListener() {
-                    public void onClick(View v) {
-                        runLogged("killall com.android.systemui || pkill -f com.android.systemui; echo ok");
-                    }
-                })));
-        root.addView(row(
-                btn("Soft reboot", new View.OnClickListener() {
-                    public void onClick(View v) {
-                        confirm("Restart the Android framework? The screen will go black for a moment.",
-                                "setprop ctl.restart zygote");
-                    }
-                }),
-                btn("Reboot", new View.OnClickListener() {
-                    public void onClick(View v) {
-                        confirm("Reboot the phone?", "reboot");
-                    }
-                })));
-
-        root.addView(header("Log"));
-        logView = new TextView(this);
-        logView.setTextIsSelectable(true);
+    LinearLayout buildLogPage() {
+        LinearLayout p = newPage("Log");
+        LinearLayout c = card();
+        logView = tv("", 12, ON_SURFACE, false);
         logView.setTypeface(Typeface.MONOSPACE);
-        logView.setTextSize(12);
-        root.addView(logView);
-
-        setContentView(sv);
+        logView.setTextIsSelectable(true);
+        c.addView(logView);
+        p.addView(c, mlp(4));
+        p.addView(pillRow(pill("Clear", false, new View.OnClickListener() {
+            public void onClick(View v) {
+                logView.setText("");
+            }
+        })), mlp(12));
+        return p;
     }
 
     void log(String s) {
@@ -369,47 +692,95 @@ public class MainActivity extends Activity {
 
     void confirm(String msg, final String cmd) {
         new AlertDialog.Builder(this).setMessage(msg)
-                .setPositiveButton("Yes", new android.content.DialogInterface.OnClickListener() {
-                    public void onClick(android.content.DialogInterface d, int w) {
+                .setPositiveButton("Yes", new DialogInterface.OnClickListener() {
+                    public void onClick(DialogInterface d, int w) {
                         runLogged(cmd);
                     }
                 }).setNegativeButton("Cancel", null).show();
     }
 
-    // ---------- toggles ----------
+    // =====================================================================
+    // toggles
+    // =====================================================================
+    static String groupOf(Toggle t) {
+        if (t.label.startsWith("Blur:")) return "Blur";
+        if (t.label.startsWith("Anim:")) return "Animations";
+        return "General";
+    }
+
+    static String shortLabel(Toggle t) {
+        int i = t.label.indexOf(':');
+        if (!groupOf(t).equals("General") && i > 0) return t.label.substring(i + 1).trim();
+        return t.label;
+    }
+
     void refreshToggles() {
         toggleBox.removeAllViews();
-        for (final Toggle t : toggles) {
-            if (t.choice) {
-                addChoice(t);
-                continue;
+        String[] groups = {"Blur", "Animations", "General"};
+        for (String g : groups) {
+            LinearLayout card = null;
+            for (Toggle t : toggles) {
+                if (!groupOf(t).equals(g)) continue;
+                if (card == null) {
+                    toggleBox.addView(header(g));
+                    card = card();
+                    toggleBox.addView(card, mlp(8));
+                } else {
+                    View div = new View(this);
+                    div.setBackgroundColor(DIVIDER);
+                    card.addView(div, new LinearLayout.LayoutParams(MATCH, 1));
+                }
+                if (t.choice) addChoiceRow(card, t);
+                else addSwitchRow(card, t);
             }
-            final Switch sw = new Switch(this);
-            sw.setText(t.label + "\n" + t.key + "  (on=" + t.on + ", off=" + t.off + ")");
-            sw.setPadding(0, dp(10), 0, dp(10));
-            sw.setEnabled(false);
-            sw.setOnLongClickListener(new View.OnLongClickListener() {
-                public boolean onLongClick(View v) {
-                    itemMenu(t);
-                    return true;
-                }
-            });
-            toggleBox.addView(sw);
-            su("getprop " + t.key, new Cb() {
-                public void done(int c, String out) {
-                    sw.setChecked(out.equals(t.on));
-                    sw.setEnabled(true);
-                    sw.setOnCheckedChangeListener(new android.widget.CompoundButton.OnCheckedChangeListener() {
-                        public void onCheckedChanged(android.widget.CompoundButton b, boolean checked) {
-                            setToggle(t, checked, sw);
-                        }
-                    });
-                }
-            });
         }
     }
 
-    void addChoice(final Toggle t) {
+    LinearLayout titleBlock(Toggle t, View.OnLongClickListener lc) {
+        LinearLayout texts = new LinearLayout(this);
+        texts.setOrientation(LinearLayout.VERTICAL);
+        texts.addView(tv(shortLabel(t), 17, ON_SURFACE, false));
+        TextView k = tv(t.key, 11, ON_VARIANT, false);
+        k.setTypeface(Typeface.MONOSPACE);
+        texts.addView(k);
+        texts.setOnLongClickListener(lc);
+        return texts;
+    }
+
+    void addSwitchRow(LinearLayout card, final Toggle t) {
+        View.OnLongClickListener lc = new View.OnLongClickListener() {
+            public boolean onLongClick(View v) {
+                itemMenu(t);
+                return true;
+            }
+        };
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, dp(10), 0, dp(10));
+        row.setOnLongClickListener(lc);
+        row.addView(titleBlock(t, lc), new LinearLayout.LayoutParams(0, WRAP, 1f));
+        final Switch sw = new Switch(this);
+        sw.setThumbTintList(cs(ON_SURFACE, ON_VARIANT));
+        sw.setTrackTintList(cs(PRIMARY, CARD2));
+        sw.setEnabled(false);
+        sw.setOnLongClickListener(lc);
+        row.addView(sw, new LinearLayout.LayoutParams(WRAP, WRAP));
+        card.addView(row);
+        su("getprop " + t.key, new Cb() {
+            public void done(int c, String out) {
+                sw.setChecked(out.equals(t.on));
+                sw.setEnabled(true);
+                sw.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+                    public void onCheckedChanged(CompoundButton b, boolean checked) {
+                        setToggle(t, checked, sw);
+                    }
+                });
+            }
+        });
+    }
+
+    void addChoiceRow(LinearLayout card, final Toggle t) {
         final View.OnLongClickListener lc = new View.OnLongClickListener() {
             public boolean onLongClick(View v) {
                 itemMenu(t);
@@ -418,11 +789,9 @@ public class MainActivity extends Activity {
         };
         LinearLayout wrap = new LinearLayout(this);
         wrap.setOrientation(LinearLayout.VERTICAL);
-        wrap.setPadding(0, dp(10), 0, dp(10));
-        TextView tv = new TextView(this);
-        tv.setText(t.label + "\n" + t.key);
-        tv.setOnLongClickListener(lc);
-        wrap.addView(tv);
+        wrap.setPadding(0, dp(10), 0, dp(6));
+        wrap.setOnLongClickListener(lc);
+        wrap.addView(titleBlock(t, lc));
         final RadioGroup rg = new RadioGroup(this);
         rg.setOrientation(RadioGroup.HORIZONTAL);
         final List<String> vals = new ArrayList<>();
@@ -432,22 +801,24 @@ public class MainActivity extends Activity {
             if (i < 0) continue;
             RadioButton rb = new RadioButton(this);
             rb.setText(line.substring(0, i).trim());
+            rb.setTextColor(ON_SURFACE);
+            rb.setButtonTintList(cs(PRIMARY, ON_VARIANT));
             rb.setId(View.generateViewId());
             rb.setEnabled(false);
             rb.setOnLongClickListener(lc);
-            rg.addView(rb);
+            rg.addView(rb, new RadioGroup.LayoutParams(WRAP, WRAP));
             rbs.add(rb);
             vals.add(line.substring(i + 1).trim());
         }
         wrap.addView(rg);
-        toggleBox.addView(wrap);
+        card.addView(wrap);
         su("getprop " + t.key, new Cb() {
             public void done(int c, String out) {
                 for (int i = 0; i < rbs.size(); i++) {
                     rbs.get(i).setEnabled(true);
                     if (vals.get(i).equals(out)) rg.check(rbs.get(i).getId());
                 }
-                if (!vals.contains(out)) log(t.label + ": current value '" + out + "' matches no option");
+                if (!vals.contains(out)) log(shortLabel(t) + ": current value '" + out + "' matches no option");
                 rg.setOnCheckedChangeListener(new RadioGroup.OnCheckedChangeListener() {
                     public void onCheckedChanged(RadioGroup g, int id) {
                         for (int i = 0; i < rbs.size(); i++) {
@@ -480,8 +851,8 @@ public class MainActivity extends Activity {
                 if (actual != sw.isChecked()) {
                     sw.setOnCheckedChangeListener(null);
                     sw.setChecked(actual);
-                    sw.setOnCheckedChangeListener(new android.widget.CompoundButton.OnCheckedChangeListener() {
-                        public void onCheckedChanged(android.widget.CompoundButton b, boolean checked) {
+                    sw.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+                        public void onCheckedChanged(CompoundButton b, boolean checked) {
                             setToggle(t, checked, sw);
                         }
                     });
@@ -493,8 +864,8 @@ public class MainActivity extends Activity {
 
     void itemMenu(final Toggle t) {
         new AlertDialog.Builder(this).setTitle(t.label)
-                .setItems(new CharSequence[]{"Edit", "Delete"}, new android.content.DialogInterface.OnClickListener() {
-                    public void onClick(android.content.DialogInterface d, int i) {
+                .setItems(new CharSequence[]{"Edit", "Delete"}, new DialogInterface.OnClickListener() {
+                    public void onClick(DialogInterface d, int i) {
                         if (i == 0) {
                             editDialog(t, "", "");
                         } else {
@@ -538,7 +909,7 @@ public class MainActivity extends Activity {
             on = scanVal;
             off = guessOff(scanVal);
         }
-        final EditText fl = field(box, "Name (e.g. Blur notification)", l);
+        final EditText fl = field(box, "Name (e.g. Blur: notification)", l);
         final EditText fk = field(box, "Property key", k);
         final EditText fon = field(box, "Value when ON", on);
         final EditText foff = field(box, "Value when OFF", off);
@@ -547,14 +918,14 @@ public class MainActivity extends Activity {
         sc.setPadding(0, dp(10), 0, dp(4));
         box.addView(sc);
         final EditText fopts = new EditText(this);
-        fopts.setHint("One option per line:\nLite=0\nFull=1");
+        fopts.setHint("One option per line:\nLite=basic\nFull=full");
         fopts.setMinLines(3);
         fopts.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
         fopts.setText(existing != null ? existing.opts : "");
         box.addView(fopts);
         final boolean startChoice = existing != null && existing.choice;
-        sc.setOnCheckedChangeListener(new android.widget.CompoundButton.OnCheckedChangeListener() {
-            public void onCheckedChanged(android.widget.CompoundButton b, boolean c) {
+        sc.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            public void onCheckedChanged(CompoundButton b, boolean c) {
                 fon.setVisibility(c ? View.GONE : View.VISIBLE);
                 foff.setVisibility(c ? View.GONE : View.VISIBLE);
                 fopts.setVisibility(c ? View.VISIBLE : View.GONE);
@@ -569,8 +940,8 @@ public class MainActivity extends Activity {
         new AlertDialog.Builder(this)
                 .setTitle(existing == null ? "Add toggle" : "Edit toggle")
                 .setView(dsv)
-                .setPositiveButton("Save", new android.content.DialogInterface.OnClickListener() {
-                    public void onClick(android.content.DialogInterface d, int w) {
+                .setPositiveButton("Save", new DialogInterface.OnClickListener() {
+                    public void onClick(DialogInterface d, int w) {
                         String key = fk.getText().toString().trim();
                         if (!key.matches("[A-Za-z0-9._-]+")) {
                             log("Invalid property key");
@@ -584,7 +955,7 @@ public class MainActivity extends Activity {
                             int n = 0;
                             for (String ln : o.split("\n")) if (ln.indexOf('=') > 0) n++;
                             if (n < 2) {
-                                log("Choice mode needs at least 2 lines like Lite=0");
+                                log("Choice mode needs at least 2 lines like Lite=basic");
                                 return;
                             }
                             t.choice = true;
@@ -621,8 +992,8 @@ public class MainActivity extends Activity {
                 CharSequence[] items = new CharSequence[keys.size()];
                 for (int i = 0; i < items.length; i++) items[i] = keys.get(i) + " = " + vals.get(i);
                 new AlertDialog.Builder(MainActivity.this).setTitle("Tap a prop to add as toggle")
-                        .setItems(items, new android.content.DialogInterface.OnClickListener() {
-                            public void onClick(android.content.DialogInterface d, int i) {
+                        .setItems(items, new DialogInterface.OnClickListener() {
+                            public void onClick(DialogInterface d, int i) {
                                 editDialog(null, keys.get(i), vals.get(i));
                             }
                         }).show();
@@ -630,9 +1001,10 @@ public class MainActivity extends Activity {
         });
     }
 
-    // ---------- launcher icon size ----------
-    static final String PREFS_NAME = "MzCommonUtils_Common_Preferences.xml";
-    // Finds the launcher prefs file (it may live in device-protected storage) and puts its path in $F
+    // =====================================================================
+    // launcher icon size
+    // =====================================================================
+    // Finds the launcher prefs file and puts its path in $F
     static final String FIND_F = "F=''; for d in /data/user_de/0 /data/user/0 /data/data; do "
             + "if [ -f \"$d/" + LAUNCHER + "/shared_prefs/" + PREFS_NAME + "\" ]; then "
             + "F=\"$d/" + LAUNCHER + "/shared_prefs/" + PREFS_NAME + "\"; break; fi; done; "
