@@ -547,8 +547,17 @@ public class MainActivity extends Activity {
     }
 
     // ---------- launcher icon size ----------
+    static final String PREFS_NAME = "MzCommonUtils_Common_Preferences.xml";
+    // Finds the launcher prefs file (it may live in device-protected storage) and puts its path in $F
+    static final String FIND_F = "F=''; for d in /data/user_de/0 /data/user/0 /data/data; do "
+            + "if [ -f \"$d/" + LAUNCHER + "/shared_prefs/" + PREFS_NAME + "\" ]; then "
+            + "F=\"$d/" + LAUNCHER + "/shared_prefs/" + PREFS_NAME + "\"; break; fi; done; "
+            + "if [ -z \"$F\" ]; then F=$(find /data -maxdepth 6 -name " + PREFS_NAME
+            + " -path '*" + LAUNCHER + "*' 2>/dev/null | head -n1); fi; "
+            + "if [ -z \"$F\" ]; then echo 'Prefs file not found anywhere under /data'; exit 1; fi; ";
+
     void readIcon() {
-        su("grep -o '" + ICON_KEY + "[^/]*' " + PREFS_XML, new Cb() {
+        su(FIND_F + "echo \"File: $F\"; grep -o '" + ICON_KEY + "[^/]*' \"$F\"", new Cb() {
             public void done(int c, String out) {
                 log(out.isEmpty() ? "Not found (exit " + c + ")" : out);
                 Matcher m = Pattern.compile("value=\"([0-9.]+)\"").matcher(out);
@@ -563,13 +572,14 @@ public class MainActivity extends Activity {
             log("Enter a whole number");
             return;
         }
-        String cmd = "U=$(stat -c %U /data/data/" + LAUNCHER + "); "
+        String cmd = FIND_F
+                + "U=$(stat -c %U \"$F\"); "
                 + "am force-stop " + LAUNCHER + "; "
-                + "sed -i 's/" + ICON_KEY + "\" value=\"[0-9.]*\"/" + ICON_KEY + "\" value=\"" + s + "\"/' " + PREFS_XML + "; "
-                + "chown $U:$U " + PREFS_XML + "; "
-                + "chmod 660 " + PREFS_XML + "; "
-                + "restorecon " + PREFS_XML + "; "
-                + "grep -o '" + ICON_KEY + "[^/]*' " + PREFS_XML + "; "
+                + "sed -i 's/" + ICON_KEY + "\" value=\"[0-9.]*\"/" + ICON_KEY + "\" value=\"" + s + "\"/' \"$F\"; "
+                + "chown $U:$U \"$F\"; "
+                + "chmod 660 \"$F\"; "
+                + "restorecon \"$F\"; "
+                + "echo \"File: $F\"; grep -o '" + ICON_KEY + "[^/]*' \"$F\"; "
                 + "am start -a android.intent.action.MAIN -c android.intent.category.HOME >/dev/null 2>&1";
         runLogged(cmd);
     }
