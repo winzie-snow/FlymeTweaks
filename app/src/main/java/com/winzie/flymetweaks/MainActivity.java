@@ -5,11 +5,18 @@ import android.app.AlertDialog;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.SharedPreferences;
+import android.animation.ValueAnimator;
 import android.content.res.ColorStateList;
+import android.content.res.Configuration;
 import android.graphics.Bitmap;
+import android.graphics.BitmapShader;
+import android.graphics.Color;
+import android.graphics.Matrix;
+import android.graphics.Paint;
 import android.graphics.Canvas;
 import android.graphics.Outline;
 import android.graphics.RenderEffect;
+import android.graphics.RuntimeShader;
 import android.graphics.Shader;
 import android.graphics.Typeface;
 import android.graphics.drawable.BitmapDrawable;
@@ -21,10 +28,12 @@ import android.os.Handler;
 import android.os.Looper;
 import android.text.InputType;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewOutlineProvider;
 import android.view.ViewTreeObserver;
+import android.view.animation.OvershootInterpolator;
 import android.widget.CompoundButton;
 import android.widget.EditText;
 import android.widget.FrameLayout;
@@ -48,7 +57,8 @@ import java.util.regex.Pattern;
 
 public class MainActivity extends Activity {
 
-    // ---------- palette: Material You dynamic colors on Android 12+, blue fallback below ----------
+    // ---------- palette: Material You dynamic colors (Android 12+), blue fallback below; light + dark ----------
+    static boolean LIGHT = false;
     static int BG = 0xFF111418;
     static int CARD = 0xFF1E2227;
     static int CARD2 = 0xFF2F4156;
@@ -58,19 +68,46 @@ public class MainActivity extends Activity {
     static int ON_SURFACE = 0xFFE2E2E9;
     static int ON_VARIANT = 0xFFC3C6CF;
     static int DIVIDER = 0xFF3A3F47;
-    static final int ERROR = 0xFFFFB4AB;
-    static final int ON_ERROR = 0xFF690005;
+    static int ERROR = 0xFFFFB4AB;
+    static int ON_ERROR = 0xFF690005;
 
     static void initPalette(Context c) {
+        boolean night = (c.getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
+                == Configuration.UI_MODE_NIGHT_YES;
+        // the DayNight theme only exists on Android 10+, below that the app is dark only
+        LIGHT = Build.VERSION.SDK_INT >= 29 && !night;
+        if (LIGHT) {
+            BG = 0xFFF9F9FF;
+            CARD = 0xFFECEEF5;
+            CARD2 = 0xFFD7E3F8;
+            PRIMARY = 0xFF1B5FB5;
+            ON_PRIMARY = 0xFFFFFFFF;
+            ON_SURFACE = 0xFF1A1C20;
+            ON_VARIANT = 0xFF43474F;
+            DIVIDER = 0xFFC3C6CF;
+            ERROR = 0xFFBA1A1A;
+            ON_ERROR = 0xFFFFFFFF;
+        }
         if (Build.VERSION.SDK_INT >= 31) {
-            BG = c.getColor(android.R.color.system_neutral1_900);
-            CARD = c.getColor(android.R.color.system_neutral1_800);
-            CARD2 = c.getColor(android.R.color.system_accent2_700);
-            PRIMARY = c.getColor(android.R.color.system_accent1_200);
-            ON_PRIMARY = c.getColor(android.R.color.system_accent1_800);
-            ON_SURFACE = c.getColor(android.R.color.system_neutral1_100);
-            ON_VARIANT = c.getColor(android.R.color.system_neutral2_200);
-            DIVIDER = c.getColor(android.R.color.system_neutral2_700);
+            if (LIGHT) {
+                BG = c.getColor(android.R.color.system_neutral1_10);
+                CARD = c.getColor(android.R.color.system_neutral1_50);
+                CARD2 = c.getColor(android.R.color.system_accent2_100);
+                PRIMARY = c.getColor(android.R.color.system_accent1_600);
+                ON_PRIMARY = c.getColor(android.R.color.system_accent1_0);
+                ON_SURFACE = c.getColor(android.R.color.system_neutral1_900);
+                ON_VARIANT = c.getColor(android.R.color.system_neutral2_700);
+                DIVIDER = c.getColor(android.R.color.system_neutral2_200);
+            } else {
+                BG = c.getColor(android.R.color.system_neutral1_900);
+                CARD = c.getColor(android.R.color.system_neutral1_800);
+                CARD2 = c.getColor(android.R.color.system_accent2_700);
+                PRIMARY = c.getColor(android.R.color.system_accent1_200);
+                ON_PRIMARY = c.getColor(android.R.color.system_accent1_800);
+                ON_SURFACE = c.getColor(android.R.color.system_neutral1_100);
+                ON_VARIANT = c.getColor(android.R.color.system_neutral2_200);
+                DIVIDER = c.getColor(android.R.color.system_neutral2_700);
+            }
         }
         ACCENT = PRIMARY;
     }
@@ -117,10 +154,18 @@ public class MainActivity extends Activity {
         initPalette(this);
         getWindow().setStatusBarColor(BG);
         getWindow().setNavigationBarColor(BG);
+        int ui = getWindow().getDecorView().getSystemUiVisibility();
+        if (LIGHT) {
+            ui |= View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+        } else {
+            ui &= ~(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
+        }
+        getWindow().getDecorView().setSystemUiVisibility(ui);
         sp = getSharedPreferences("cfg", MODE_PRIVATE);
         loadToggles();
         buildUi();
-        selectTab(0);
+        showPage(0);
+        bar.setSelected(0);
         checkRoot();
         refreshToggles();
         su("getprop ro.build.display.id", new Cb() {
@@ -369,7 +414,7 @@ public class MainActivity extends Activity {
 
     void addAction(LinearLayout page, String title, String sub, View.OnClickListener l) {
         LinearLayout c = card();
-        c.setBackground(new RippleDrawable(ColorStateList.valueOf(0x33FFFFFF), round(CARD, 28), null));
+        c.setBackground(new RippleDrawable(ColorStateList.valueOf(alpha(ON_SURFACE, 0x22)), round(CARD, 28), null));
         c.addView(tv(title, 18, ON_SURFACE, false));
         TextView s = tv(sub, 14, ON_VARIANT, false);
         s.setPadding(0, dp(2), 0, 0);
@@ -383,7 +428,7 @@ public class MainActivity extends Activity {
         TextView b = tv(text, 15, primary ? ON_PRIMARY : ON_SURFACE, true);
         b.setGravity(Gravity.CENTER);
         b.setPadding(dp(16), dp(14), dp(16), dp(14));
-        b.setBackground(new RippleDrawable(ColorStateList.valueOf(0x44FFFFFF),
+        b.setBackground(new RippleDrawable(ColorStateList.valueOf(primary ? alpha(ON_PRIMARY, 0x33) : alpha(ON_SURFACE, 0x22)),
                 round(primary ? PRIMARY : CARD2, 28), null));
         b.setClickable(true);
         b.setOnClickListener(l);
@@ -425,11 +470,18 @@ public class MainActivity extends Activity {
         pages[2] = buildLauncherPage();
         pages[3] = buildLogPage();
 
-        bar = new GlassBar(this, scroll);
+        bar = new GlassBar(this, scroll, 4, new GlassBar.Listener() {
+            public void onSelect(int i) {
+                showPage(i);
+            }
+
+            public void onHighlight(int i) {
+                setTabHighlight(i);
+            }
+        });
         String[] names = {"Home", "Toggles", "Launcher", "Log"};
         int[] icons = {R.drawable.ic_home, R.drawable.ic_tune, R.drawable.ic_apps, R.drawable.ic_log};
         for (int i = 0; i < 4; i++) {
-            final int idx = i;
             LinearLayout tab = new LinearLayout(this);
             tab.setOrientation(LinearLayout.VERTICAL);
             tab.setGravity(Gravity.CENTER);
@@ -439,11 +491,6 @@ public class MainActivity extends Activity {
             t.setGravity(Gravity.CENTER);
             tab.addView(iv, new LinearLayout.LayoutParams(dp(24), dp(24)));
             tab.addView(t, new LinearLayout.LayoutParams(WRAP, WRAP));
-            tab.setOnClickListener(new View.OnClickListener() {
-                public void onClick(View v) {
-                    selectTab(idx);
-                }
-            });
             tabs[i] = tab;
             tabIcons[i] = iv;
             tabLabels[i] = t;
@@ -458,50 +505,206 @@ public class MainActivity extends Activity {
         setContentView(root);
     }
 
-    void selectTab(int i) {
+    void showPage(int i) {
         scroll.removeAllViews();
         scroll.addView(pages[i], new ViewGroup.LayoutParams(MATCH, WRAP));
         scroll.scrollTo(0, 0);
-        for (int j = 0; j < 4; j++) {
-            boolean sel = j == i;
-            tabs[j].setBackground(sel ? round(alpha(ON_SURFACE, 0x33), 30) : null);
-            tabIcons[j].setColorFilter(sel ? ACCENT : ON_SURFACE);
-            tabLabels[j].setTextColor(sel ? ACCENT : ON_SURFACE);
-        }
-        bar.refresh();
+        setTabHighlight(i);
+        if (bar != null) bar.refreshSoon();
     }
 
-    /** Frosted "glass" bar: blurs a snapshot of what scrolls behind it. */
+    void setTabHighlight(int i) {
+        for (int j = 0; j < 4; j++) {
+            boolean sel = j == i;
+            tabIcons[j].setColorFilter(sel ? PRIMARY : ON_SURFACE);
+            tabLabels[j].setTextColor(sel ? PRIMARY : ON_SURFACE);
+        }
+    }
+
+    /**
+     * AGSL liquid glass (Android 13+), based on the physics from kube.io's liquid glass article:
+     * convex squircle bezel -> surface normal -> Snell refraction -> inward displacement, plus
+     * chromatic dispersion and a rim specular light. One shader draws both the bar and the lens.
+     */
+    static class AgslGlass {
+        static final String SRC = ""
+                + "uniform shader content;\n"
+                + "uniform float2 center;\n"
+                + "uniform float2 halfSize;\n"
+                + "uniform float radius;\n"
+                + "uniform float bevel;\n"
+                + "uniform float thickness;\n"
+                + "uniform float refractAmt;\n"
+                + "uniform float dispersion;\n"
+                + "uniform float blurPx;\n"
+                + "uniform float press;\n"
+                + "uniform float specular;\n"
+                + "uniform float2 lightDir;\n"
+                + "uniform float4 tint;\n"
+                + "uniform float4 outline;\n"
+                + "uniform float2 lo;\n"
+                + "uniform float2 hi;\n"
+                + "\n"
+                + "float sdBox(float2 p, float2 b, float r) {\n"
+                + "    float2 q = abs(p) - b + float2(r);\n"
+                + "    return length(max(q, float2(0.0))) + min(max(q.x, q.y), 0.0) - r;\n"
+                + "}\n"
+                + "float2 clampC(float2 c) {\n"
+                + "    return clamp(c, lo, hi);\n"
+                + "}\n"
+                + "float surfSlope(float x) {\n"
+                + "    float om = 1.0 - x;\n"
+                + "    float om3 = om * om * om;\n"
+                + "    float u = max(1.0 - om3 * om, 0.0001);\n"
+                + "    return om3 / pow(u, 0.75);\n"
+                + "}\n"
+                + "half4 main(float2 coord) {\n"
+                + "    float2 p = coord - center;\n"
+                + "    float dist = sdBox(p, halfSize, radius);\n"
+                + "    float cov = clamp(0.5 - dist, 0.0, 1.0);\n"
+                + "    if (cov <= 0.002) {\n"
+                + "        return half4(0.0);\n"
+                + "    }\n"
+                + "    float2 n = float2(\n"
+                + "        sdBox(p + float2(1.0, 0.0), halfSize, radius) - sdBox(p - float2(1.0, 0.0), halfSize, radius),\n"
+                + "        sdBox(p + float2(0.0, 1.0), halfSize, radius) - sdBox(p - float2(0.0, 1.0), halfSize, radius));\n"
+                + "    float nl = length(n);\n"
+                + "    if (nl > 0.0001) {\n"
+                + "        n = n / nl;\n"
+                + "    } else {\n"
+                + "        n = float2(0.0, -1.0);\n"
+                + "    }\n"
+                + "    float depth = max(-dist, 0.0);\n"
+                + "    float bw = max(bevel, 1.0);\n"
+                + "    float x = clamp(depth / bw, 0.004, 1.0);\n"
+                + "    float s = surfSlope(x) * thickness / bw;\n"
+                + "    float invS = 1.0 / sqrt(1.0 + s * s);\n"
+                + "    float3 N = float3(n * (s * invS), invS);\n"
+                + "    float eta = 1.0 / 1.5;\n"
+                + "    float cosi = N.z;\n"
+                + "    float k = max(1.0 - eta * eta * (1.0 - cosi * cosi), 0.0);\n"
+                + "    float coef = eta * cosi - sqrt(k);\n"
+                + "    float tz = -eta + coef * N.z;\n"
+                + "    float2 lateral = coef * N.xy * (thickness / max(-tz, 0.05));\n"
+                + "    float2 off = lateral * (refractAmt * (1.0 + 0.6 * press));\n"
+                + "    float2 pR = clampC(coord + off * (1.0 - dispersion));\n"
+                + "    float2 pG = clampC(coord + off);\n"
+                + "    float2 pB = clampC(coord + off * (1.0 + dispersion));\n"
+                + "    float3 col = float3(0.0);\n"
+                + "    for (int i = 0; i < 5; i++) {\n"
+                + "        float2 o = float2(0.0);\n"
+                + "        if (i == 1) { o = float2(blurPx, 0.0); }\n"
+                + "        else if (i == 2) { o = float2(-blurPx, 0.0); }\n"
+                + "        else if (i == 3) { o = float2(0.0, blurPx); }\n"
+                + "        else if (i == 4) { o = float2(0.0, -blurPx); }\n"
+                + "        col += float3(content.eval(clampC(pR + o)).r, content.eval(clampC(pG + o)).g, content.eval(clampC(pB + o)).b);\n"
+                + "    }\n"
+                + "    col = col / 5.0;\n"
+                + "    col = mix(col, tint.rgb, tint.a);\n"
+                + "    float edgeLine = clamp(1.0 - abs(dist + 0.8) / 1.3, 0.0, 1.0);\n"
+                + "    col = mix(col, outline.rgb, outline.a * edgeLine);\n"
+                + "    float facing = dot(n, lightDir);\n"
+                + "    float lobeF = pow(max(facing, 0.0), 3.0);\n"
+                + "    float lobeB = pow(max(-facing, 0.0), 3.0);\n"
+                + "    float hair = clamp(1.0 - abs(dist + 1.4) / 2.2, 0.0, 1.0);\n"
+                + "    float glow = (1.0 - smoothstep(0.0, max(bevel * 0.45, 2.0), depth)) * 0.16;\n"
+                + "    float spec = (hair * (lobeF + 0.65 * lobeB) + glow * lobeF) * specular * (1.0 - 0.35 * press);\n"
+                + "    col = clamp(col + float3(spec), float3(0.0), float3(1.0));\n"
+                + "    return half4(half3(col * cov), half(cov));\n"
+                + "}\n";
+
+        final RuntimeShader bar = new RuntimeShader(SRC);
+        final RuntimeShader lens = new RuntimeShader(SRC);
+
+        void setBackdrop(BitmapShader s) {
+            bar.setInputShader("content", s);
+            lens.setInputShader("content", s);
+        }
+
+        static void set(RuntimeShader r, float cx, float cy, float hw, float hh, float rad,
+                        float bevel, float thick, float refr, float disp, float blurPx,
+                        float press, float spec, int tint, int outline, float w, float h) {
+            r.setFloatUniform("center", cx, cy);
+            r.setFloatUniform("halfSize", hw, hh);
+            r.setFloatUniform("radius", rad);
+            r.setFloatUniform("bevel", bevel);
+            r.setFloatUniform("thickness", thick);
+            r.setFloatUniform("refractAmt", refr);
+            r.setFloatUniform("dispersion", disp);
+            r.setFloatUniform("blurPx", blurPx);
+            r.setFloatUniform("press", press);
+            r.setFloatUniform("specular", spec);
+            r.setFloatUniform("lightDir", -0.55f, -0.83f);
+            r.setFloatUniform("tint", Color.red(tint) / 255f, Color.green(tint) / 255f,
+                    Color.blue(tint) / 255f, Color.alpha(tint) / 255f);
+            r.setFloatUniform("outline", Color.red(outline) / 255f, Color.green(outline) / 255f,
+                    Color.blue(outline) / 255f, Color.alpha(outline) / 255f);
+            r.setFloatUniform("lo", 1f, 1f);
+            r.setFloatUniform("hi", w - 1f, h - 1f);
+        }
+    }
+
+    /**
+     * Bottom tab bar made of glass. The bar and a selection "lens" are drawn with the AGSL shader
+     * above (Android 13+); older versions get a frosted blur fallback. The lens reacts to touch:
+     * press = it grows and refracts harder, drag = it follows the finger, release = it springs
+     * to the nearest tab.
+     */
     static class GlassBar extends FrameLayout {
+        interface Listener {
+            void onSelect(int index);
+
+            void onHighlight(int index);
+        }
+
+        static final float CAPTURE_SCALE = 0.35f;
+
         final ImageView blur;
+        final View tint;
         final LinearLayout row;
         final View source;
-        Bitmap bmp;
+        final Listener listener;
+        final int count;
+        final float d;
+        final Paint barPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        final Paint lensPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        final Paint fb = new Paint(Paint.ANTI_ALIAS_FLAG);
         final int[] a = new int[2];
         final int[] b = new int[2];
+        AgslGlass agsl;
+        Bitmap bmp;
+        BitmapShader bs;
+        int selected = 0;
+        int highlight = 0;
+        float lensX = -1f;
+        float press = 0f;
+        float downX, downLens;
+        boolean dragging;
+        ValueAnimator pressAnim, slideAnim;
         final Runnable tick = new Runnable() {
             public void run() {
                 refresh();
-                postDelayed(this, 250);
+                postDelayed(this, 200);
             }
         };
 
-        GlassBar(Context ctx, View src) {
+        GlassBar(Context ctx, View src, int count, Listener l) {
             super(ctx);
             source = src;
-            final float d = ctx.getResources().getDisplayMetrics().density;
+            listener = l;
+            this.count = count;
+            d = ctx.getResources().getDisplayMetrics().density;
+            setWillNotDraw(false);
+
             blur = new ImageView(ctx);
             blur.setScaleType(ImageView.ScaleType.FIT_XY);
-            if (Build.VERSION.SDK_INT >= 31) {
-                blur.setRenderEffect(RenderEffect.createBlurEffect(12f, 12f, Shader.TileMode.CLAMP));
-            }
             addView(blur, new FrameLayout.LayoutParams(MATCH, MATCH));
 
-            View tint = new View(ctx);
+            tint = new View(ctx);
             GradientDrawable g = new GradientDrawable();
-            g.setColor(MainActivity.alpha(MainActivity.ON_SURFACE, 0x2A));
+            g.setColor(MainActivity.alpha(MainActivity.ON_SURFACE, 0x1E));
             g.setCornerRadius(100 * d);
-            g.setStroke((int) (1.5f * d), MainActivity.alpha(MainActivity.ON_SURFACE, 0x77));
+            g.setStroke((int) (1.5f * d), MainActivity.alpha(MainActivity.ON_SURFACE, 0x55));
             tint.setBackground(g);
             addView(tint, new FrameLayout.LayoutParams(MATCH, MATCH));
 
@@ -509,6 +712,20 @@ public class MainActivity extends Activity {
             row.setOrientation(LinearLayout.HORIZONTAL);
             row.setPadding((int) (6 * d), (int) (6 * d), (int) (6 * d), (int) (6 * d));
             addView(row, new FrameLayout.LayoutParams(MATCH, MATCH));
+
+            if (Build.VERSION.SDK_INT >= 33) {
+                try {
+                    agsl = new AgslGlass();
+                } catch (Throwable t) {
+                    agsl = null;
+                }
+            }
+            if (agsl != null) {
+                blur.setVisibility(View.GONE);
+                tint.setVisibility(View.GONE);
+            } else if (Build.VERSION.SDK_INT >= 31) {
+                blur.setRenderEffect(RenderEffect.createBlurEffect(12f, 12f, Shader.TileMode.CLAMP));
+            }
 
             setOutlineProvider(new ViewOutlineProvider() {
                 @Override
@@ -525,6 +742,114 @@ public class MainActivity extends Activity {
             });
         }
 
+        // ---------- geometry ----------
+        float pad() {
+            return 6 * d;
+        }
+
+        float cell() {
+            return (getWidth() - 2 * pad()) / count;
+        }
+
+        float center(int i) {
+            return pad() + cell() * (i + 0.5f);
+        }
+
+        int nearest(float x) {
+            int i = Math.round((x - pad()) / cell() - 0.5f);
+            return Math.max(0, Math.min(count - 1, i));
+        }
+
+        void setSelected(int i) {
+            selected = i;
+            highlight = i;
+            if (getWidth() > 0) lensX = center(i);
+            invalidate();
+        }
+
+        @Override
+        protected void onSizeChanged(int w, int h, int ow, int oh) {
+            super.onSizeChanged(w, h, ow, oh);
+            lensX = center(selected);
+            refresh();
+        }
+
+        // ---------- interaction ----------
+        void animatePress(float to) {
+            if (pressAnim != null) pressAnim.cancel();
+            pressAnim = ValueAnimator.ofFloat(press, to);
+            pressAnim.setDuration(180);
+            pressAnim.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
+                public void onAnimationUpdate(ValueAnimator va) {
+                    press = (Float) va.getAnimatedValue();
+                    invalidate();
+                }
+            });
+            pressAnim.start();
+        }
+
+        void slideTo(int i) {
+            if (slideAnim != null) slideAnim.cancel();
+            slideAnim = ValueAnimator.ofFloat(lensX, center(i));
+            slideAnim.setDuration(380);
+            slideAnim.setInterpolator(new OvershootInterpolator(0.8f));
+            slideAnim.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
+                public void onAnimationUpdate(ValueAnimator va) {
+                    lensX = (Float) va.getAnimatedValue();
+                    invalidate();
+                }
+            });
+            slideAnim.start();
+        }
+
+        void commit(int target) {
+            boolean changed = target != selected;
+            selected = target;
+            highlight = target;
+            slideTo(target);
+            listener.onHighlight(target);
+            if (changed) listener.onSelect(target);
+        }
+
+        @Override
+        public boolean onTouchEvent(MotionEvent e) {
+            switch (e.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    if (slideAnim != null) slideAnim.cancel();
+                    downX = e.getX();
+                    downLens = lensX;
+                    dragging = false;
+                    animatePress(1f);
+                    if (getParent() != null) getParent().requestDisallowInterceptTouchEvent(true);
+                    return true;
+                case MotionEvent.ACTION_MOVE: {
+                    float dx = e.getX() - downX;
+                    if (!dragging && Math.abs(dx) > 8 * d) dragging = true;
+                    if (dragging) {
+                        lensX = Math.max(center(0), Math.min(center(count - 1), downLens + dx));
+                        int h = nearest(lensX);
+                        if (h != highlight) {
+                            highlight = h;
+                            listener.onHighlight(h);
+                        }
+                        invalidate();
+                    }
+                    return true;
+                }
+                case MotionEvent.ACTION_UP:
+                    animatePress(0f);
+                    commit(dragging ? nearest(lensX) : nearest(e.getX()));
+                    return true;
+                case MotionEvent.ACTION_CANCEL:
+                    animatePress(0f);
+                    commit(selected);
+                    return true;
+                default:
+                    return true;
+            }
+        }
+
+        // ---------- backdrop capture ----------
         @Override
         protected void onAttachedToWindow() {
             super.onAttachedToWindow();
@@ -537,12 +862,21 @@ public class MainActivity extends Activity {
             super.onDetachedFromWindow();
         }
 
+        void refreshSoon() {
+            postDelayed(new Runnable() {
+                public void run() {
+                    refresh();
+                }
+            }, 60);
+        }
+
         void refresh() {
             int w = getWidth();
             int h = getHeight();
             if (w <= 0 || h <= 0 || source.getWidth() <= 0) return;
-            int sw = Math.max(1, w / 4);
-            int sh = Math.max(1, h / 4);
+            float cs = agsl != null ? CAPTURE_SCALE : 0.25f;
+            int sw = Math.max(1, Math.round(w * cs));
+            int sh = Math.max(1, Math.round(h * cs));
             if (bmp == null || bmp.getWidth() != sw || bmp.getHeight() != sh) {
                 bmp = Bitmap.createBitmap(sw, sh, Bitmap.Config.ARGB_8888);
                 blur.setImageDrawable(new BitmapDrawable(getResources(), bmp));
@@ -554,7 +888,83 @@ public class MainActivity extends Activity {
             c.scale(sw / (float) w, sh / (float) h);
             c.translate(b[0] - a[0] - source.getScrollX(), b[1] - a[1] - source.getScrollY());
             source.draw(c);
+            if (agsl != null) {
+                try {
+                    bs = new BitmapShader(bmp, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP);
+                    if (Build.VERSION.SDK_INT >= 34) bs.setFilterMode(BitmapShader.FILTER_MODE_LINEAR);
+                    Matrix m = new Matrix();
+                    m.setScale(w / (float) sw, h / (float) sh);
+                    bs.setLocalMatrix(m);
+                    agsl.setBackdrop(bs);
+                } catch (Throwable t) {
+                    agsl = null;
+                    bs = null;
+                }
+            }
             blur.invalidate();
+            invalidate();
+        }
+
+        // ---------- drawing ----------
+        @Override
+        protected void onDraw(Canvas c) {
+            super.onDraw(c);
+            if (getWidth() <= 0 || lensX < 0) return;
+            if (agsl != null && bs != null) {
+                try {
+                    drawAgsl(c);
+                    return;
+                } catch (Throwable t) {
+                    agsl = null;
+                    blur.setVisibility(View.VISIBLE);
+                    tint.setVisibility(View.VISIBLE);
+                }
+            }
+            drawFallback(c);
+        }
+
+        void lensGeometry(float[] out) {
+            float h = getHeight();
+            float lw = (cell() - 4 * d) * (1f + 0.22f * press) / 2f;
+            float lh = (h - 2 * pad()) / 2f * (1f + 0.10f * press);
+            lh = Math.min(lh, h / 2f - 1f);
+            out[0] = lw;
+            out[1] = lh;
+        }
+
+        void drawAgsl(Canvas c) {
+            float w = getWidth();
+            float h = getHeight();
+            float[] g = new float[2];
+            lensGeometry(g);
+            float lw = g[0];
+            float lh = g[1];
+
+            AgslGlass.set(agsl.bar, w / 2f, h / 2f, w / 2f, h / 2f, h / 2f,
+                    14 * d, 9 * d, 1.0f, 0.02f, 2.2f * d, 0f,
+                    MainActivity.LIGHT ? 0.35f : 0.7f,
+                    MainActivity.alpha(MainActivity.CARD, 0x70),
+                    MainActivity.alpha(MainActivity.ON_SURFACE, 0x38), w, h);
+            barPaint.setShader(agsl.bar);
+            c.drawRect(0, 0, w, h, barPaint);
+
+            float cy = h / 2f;
+            int lensTint = MainActivity.alpha(MainActivity.PRIMARY, (int) (0x2C * (1f - 0.5f * press)));
+            AgslGlass.set(agsl.lens, lensX, cy, lw, lh, Math.min(lw, lh),
+                    lh * 0.9f, 13 * d, 1.3f, 0.07f, 1.5f * d, press,
+                    MainActivity.LIGHT ? 0.6f : 1.0f, lensTint,
+                    MainActivity.alpha(MainActivity.ON_SURFACE, 0x28), w, h);
+            lensPaint.setShader(agsl.lens);
+            c.drawRect(lensX - lw - 2 * d, cy - lh - 2 * d, lensX + lw + 2 * d, cy + lh + 2 * d, lensPaint);
+        }
+
+        void drawFallback(Canvas c) {
+            float h = getHeight();
+            float[] g = new float[2];
+            lensGeometry(g);
+            fb.setStyle(Paint.Style.FILL);
+            fb.setColor(MainActivity.alpha(MainActivity.PRIMARY, 0x38));
+            c.drawRoundRect(lensX - g[0], h / 2f - g[1], lensX + g[0], h / 2f + g[1], g[1], g[1], fb);
         }
     }
 
@@ -761,7 +1171,7 @@ public class MainActivity extends Activity {
         row.setOnLongClickListener(lc);
         row.addView(titleBlock(t, lc), new LinearLayout.LayoutParams(0, WRAP, 1f));
         final Switch sw = new Switch(this);
-        sw.setThumbTintList(cs(ON_SURFACE, ON_VARIANT));
+        sw.setThumbTintList(cs(ON_PRIMARY, ON_VARIANT));
         sw.setTrackTintList(cs(PRIMARY, CARD2));
         sw.setEnabled(false);
         sw.setOnLongClickListener(lc);
